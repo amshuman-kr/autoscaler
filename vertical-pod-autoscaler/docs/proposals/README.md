@@ -8,10 +8,21 @@ The current VPA recommender has the following problems which calls for enhanceme
 
 1. Current VPA recommender implementation considers historic usage of resources by a pod for recommending scale of memory and CPU. This method is not efficient in handling spike in resources usage. When a spike occurs, the recommender lacks information about it in historic usage to bump up the resources and scale up. This can result in frequent component outages.
 2. Stagnant CPU recommendations w.r.t increasing limits during scale up and decreasing them during scale down scenarios.
-3. OOM Kills due to inefficient CPU and memory recommendation. For both CPU and memory the recommender suggests a percentile resource unit upgrade from the hystorical value of resource usage obtained from prometheus client. This does not take into account the current sudden bump in the resource which happens over a short duration. VPA recommender does not suggest a better scale up and scale down for such spikes resulting in crashes. 
+3. OOM Kills due to inefficient CPU and memory recommendation. 
+
+![alt text](https://github.com/kallurbsk/autoscaler/blob/master/vertical-pod-autoscaler/docs/images/vpa-recommender/ctr_restarting_resource_crunch.png)
+
+4. For both CPU and memory the recommender suggests a percentile resource unit upgrade from the hystorical value of resource usage obtained from prometheus client. This does not take into account the current sudden bump in the resource which happens over a short duration. VPA recommender does not suggest a better scale up and scale down for such spikes resulting in crashes.
+
+![alt text](https://github.com/kallurbsk/autoscaler/blob/master/vertical-pod-autoscaler/docs/images/vpa-recommender/max_ctr_limits_cpu_cores.png)
+
+![alt text](https://github.com/kallurbsk/autoscaler/blob/master/vertical-pod-autoscaler/docs/images/vpa-recommender/max_ctr_limits_mem_bytes.png)
 
 Please observe the CPU and memory hikes resulting in crash in the below graphs.
 
+![alt text](https://github.com/kallurbsk/autoscaler/blob/master/vertical-pod-autoscaler/docs/images/vpa-recommender/max_ctr_requests_cpu_cores.png)
+
+![alt text](https://github.com/kallurbsk/autoscaler/blob/master/vertical-pod-autoscaler/docs/images/vpa-recommender/max_ctr_requests_mem_bytes.png)
 
 ## Goals
 - Pluggable new recommender in place of existing VPA recommender.
@@ -53,7 +64,7 @@ Where,
 
 ## Proposal
 
-This proposal has separate solutions for Scale Up and Scale Down of resources. A recommender consisting one of the better combinations could be designed.
+To address the concerns mentioned we are proposing this change in the recommendation engine of VPA recommender for autoscaler component.
 
 #### Scale Up:
 Doubling of resources based on current resource usage
@@ -62,16 +73,16 @@ Doubling of resources based on current resource usage
   3. In the event of a spike in resource, we can recommend the target estimator, lower bound and upper bound estimator for requests as double the current resource usage obtained from prometheus
   4. This will ensure handling the spike as it is dependent on the current usage than a hysteresis of resource usage pattern
 
-  The above method can give recommendations for CPU and memory separately. Let's say that only Memory recommendation was getting doubled but CPU was not as it is well within the limit, however there were constant pod crashes, then we need to bump CPU too. In a way enable self healing mechanism for the pod to ensure we handle spikes as efficiently as possible and bring the pod up from crash cycles. For that, we keep the following variables.
-  no_of_crashes, last_crash_count_recorded_time, time_length_for_crash_check. Let's say we recommended the memory doubling but had constant crashes for more than 3 times. Then we get into else condition and double both memory and CPU irrespective of whatever the recommendation for individual resource is.
+  We consider the following 3 variables (temporary names) no_of_crashes, last_crash_count_recorded_time, time_length_for_crash_check. We can set a no_of_crashes to 3 as the default value. If there is a resource crunch even after bumping one of CPU or memory based on current usage and has resulted in crashes, no_of_crashes serves a threshold beyond which both resources are to be scaled up irrespective of current usage consumption.
+  Example: Let's say we recommended the memory doubling but had constant crashes for more than 3 times. Then we get into else condition and double both memory and CPU irrespective of whatever the recommendation for individual resource is.
 
 #### Scale Down:
 Scale down to a variable between 1 and 2 times the local maxima within a time window
-  1. Two new variables called scale_down_multiple, scale_down_monitor_time_window are used and defaulted to something like 1.2 and 1 hour respectively.
+  1. Two new variables called scale_down_multiple (default to 1.2), scale_down_monitor_time_window (default to 1 hour) are used.
   2. We find the local maxima w.r.t resource usage within scale_down_monitor_time_window.
-  3. We only scale down to scale_down_multiple times the resource usage recorded within that time window. 
-  4. `1 < scale_down_multiple < 2` (defaulted to 1.2). This ensures we always scale down to previously seen slightly higher than previously seen highest resource usage within the time window but also lesser than scale up limit of doubling.
-  Note: It could also be given as a best practise to ensure `1 < scale_down_mutliple < 1.5` so that we do not over provision the resources while scaling down.
+  3. We only scale down to `scale_down_multiple` times the maximum resource usage recorded within `scale_down_monitor_time_window`.
+  4. `1 < scale_down_multiple < 2` (defaulted to 1.2). This ensures we always scale down to, slightly higher than previously seen highest resource usage within the time window but also lesser than scale up limit of doubling.
+  Note: It could also be given as a best practise to ensure `1 < scale_down_mutliple < 1.5` so that we do not over provision the resources while scaling down. As the parameter scale_down_multiple is configurable between 1 and 2, there is room for trial and error and eventually arrive at a custom combination of parmater values for each component based on their usage of VPA.
   5. It also is crucial to scale down stepwise with shorter time windows. This ensures:
       1. Scale Down is gradual and does not vary drastically unlike percentile method during spike on and spike off events
       2. Scale Down is always done with nearest local maxima of resource usage which ensures we are not unncessarily taking history into account to avoid over or under provision resources.
